@@ -11,11 +11,15 @@ use memmap::Mmap;
 pub struct BinaryInfo {
     pub filename: String,
     pub symbols: HashMap<String, u64>,
-    pub bss_addr: u64,
-    pub bss_size: u64,
+    pub bss_info: Option<BinaryInfoBss>,
     pub offset: u64,
     pub addr: u64,
     pub size: u64
+}
+
+pub struct BinaryInfoBss {
+    pub bss_addr: u64,
+    pub bss_size: u64
 }
 
 impl BinaryInfo {
@@ -74,14 +78,13 @@ pub fn parse_binary(filename: &str, addr: u64, size: u64) -> Result<BinaryInfo, 
 
                 }
             }
-            Ok(BinaryInfo{filename: filename.to_owned(), symbols, bss_addr, bss_size, offset, addr, size})
+            Ok(BinaryInfo { filename: filename.to_owned(), symbols, bss_info: Some(BinaryInfoBss { bss_addr, bss_size }), offset, addr, size })
         }
 
         Object::Elf(elf) => {
-            let bss_header = elf.section_headers
+            let bss_header_opt = elf.section_headers
                 .iter()
-                .find(|ref header| header.sh_type == goblin::elf::section_header::SHT_NOBITS)
-                .ok_or_else(|| format_err!("Failed to find BSS section header in {}", filename))?;
+                .find(|ref header| header.sh_type == goblin::elf::section_header::SHT_NOBITS);
 
             let program_header = elf.program_headers
                 .iter()
@@ -96,10 +99,14 @@ pub fn parse_binary(filename: &str, addr: u64, size: u64) -> Result<BinaryInfo, 
                 let name = elf.strtab[sym.st_name].to_string();
                 symbols.insert(name, sym.st_value + offset);
             }
+
+            let bss_info = bss_header_opt.map(|bss_header|
+                BinaryInfoBss { bss_addr: bss_header.sh_addr + offset, bss_size: bss_header.sh_size }
+            );
+
             Ok(BinaryInfo{filename: filename.to_owned(),
                           symbols,
-                          bss_addr: bss_header.sh_addr + offset,
-                          bss_size: bss_header.sh_size,
+                          bss_info,
                           offset,
                           addr,
                           size})
@@ -119,7 +126,7 @@ pub fn parse_binary(filename: &str, addr: u64, size: u64) -> Result<BinaryInfo, 
             let bss_addr = u64::from(data_section.virtual_address) + offset;
             let bss_size = u64::from(data_section.virtual_size);
 
-            Ok(BinaryInfo{filename: filename.to_owned(), symbols, bss_addr, bss_size, offset, addr, size})
+            Ok(BinaryInfo { filename: filename.to_owned(), symbols, bss_info: Some(BinaryInfoBss { bss_addr, bss_size }), offset, addr, size })
         },
         _ => {
             Err(format_err!("Unhandled binary type"))

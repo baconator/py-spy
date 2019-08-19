@@ -409,20 +409,28 @@ fn get_python_version(python_info: &PythonProcessInfo, process: &remoteprocess::
 
     // otherwise get version info from scanning BSS section for sys.version string
     info!("Getting version from python binary BSS");
-    let bss = process.copy(python_info.python_binary.bss_addr as usize,
-                           python_info.python_binary.bss_size as usize)?;
-    match Version::scan_bytes(&bss) {
-        Ok(version) => return Ok(version),
-        Err(err) => {
-            info!("Failed to get version from BSS section: {}", err);
-            // try again if there is a libpython.so
-            if let Some(ref libpython) = python_info.libpython_binary {
-                info!("Getting version from libpython BSS");
-                let bss = process.copy(libpython.bss_addr as usize,
-                                       libpython.bss_size as usize)?;
-                match Version::scan_bytes(&bss) {
-                    Ok(version) => return Ok(version),
-                    Err(err) => info!("Failed to get version from libpython BSS section: {}", err)
+
+    if let Some(python_binary_bss) = &python_info.python_binary.bss_info {
+        let bss = process.copy(python_binary_bss.bss_addr as usize,
+                               python_binary_bss.bss_size as usize)?;
+        match Version::scan_bytes(&bss) {
+            Ok(version) => return Ok(version),
+            Err(err) => {
+                info!("Failed to get version from BSS section: {}", err);
+                // try again if there is a libpython.so
+                if let Some(ref libpython) = python_info.libpython_binary {
+                    info!("Getting version from libpython BSS");
+
+                    if let Some(libpython_bss_info) = &libpython.bss_info {
+                        let bss = process.copy(libpython_bss_info.bss_addr as usize,
+                                               libpython_bss_info.bss_size as usize)?;
+                        match Version::scan_bytes(&bss) {
+                            Ok(version) => return Ok(version),
+                            Err(err) => info!("Failed to get version from libpython BSS section: {}", err)
+                        }
+                    } else {
+                        info!("libpython did not have a BSS section!");
+                    }
                 }
             }
         }
@@ -498,7 +506,11 @@ fn get_interpreter_address_from_binary(binary: &BinaryInfo,
                                        version: &Version) -> Result<usize, Error> {
     // We're going to scan the BSS/data section for things, and try to narrowly scan things that
     // look like pointers to PyinterpreterState
-    let bss = process.copy(binary.bss_addr as usize, binary.bss_size as usize)?;
+    let bss = if let Some(binary_bss_info) = &binary.bss_info {
+        process.copy(binary_bss_info.bss_addr as usize, binary_bss_info.bss_size as usize)?
+    } else {
+        return Err(format_err!("Failed to find a BSS section in the python binary!"));
+    };
 
     #[allow(clippy::cast_ptr_alignment)]
     let addrs = unsafe { slice::from_raw_parts(bss.as_ptr() as *const usize, bss.len() / size_of::<usize>()) };
